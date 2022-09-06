@@ -1,0 +1,175 @@
+---
+title: "World Trade Organization Agricultural and Non-Agricultural Export Data for 2021 Visualized Using Leaflet"
+author: "Victor Lao"
+output: 
+  html_document:
+    theme: paper
+    toc: true
+    toc_depth: 2
+---
+
+## Introduction
+
+The recent pandemic has caused disruptions to global trade activities. Coupled with economic insecurity and rearranging world politics, market relations between countries have changed greatly from what we remember. In order to clarify the current state of global markets, data was retrieved from the World Trade Organization stats portal for exports by partner economies in 2021 and visualized on a map using leaflet. Reported trade connections were plotted alongside value to visualize potential associations between a country's trade connectivity and export value. In this report, I will go over the methodology used to create the map as well as some insight the map provides.
+
+## Methodology
+
+The data used for constructing the map was sourced from the World Trade Organization, an international organization aimed towards promoting fair and free trade in global economies. In pursuit of this goal they conduct economic research with datasets freely available on their stat portal. Data of export value for agricultural and non-agricultural products by partner economy in 2021 was exported as a csv file and imported into R.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(ggmap)
+library(leaflet)
+library(htmlwidgets)
+
+data <- tibble(read.csv("AG_Exports_2021.csv"))
+```
+
+
+Before the data could be visualized, it had to be manipulated into a format that leaflet would accept. Unfortunately, the exported dataset contained extra indicators I did not select for. In addition, some characters were not correctly translated. Data was filtered on the relevant indicators and incorrectly formatted country names were individually transformed into a UTF-8 compliant form.
+```{r message=FALSE, warning=FALSE, results='hide'}
+filtered_data <- data %>%
+  filter(Indicator == "AG - Value of exports to partner (imports by partner)" |
+         Indicator == "Non-AG - Value of exports to partner (imports by partner)") %>%
+  select(Reporting.Economy, Partner.Economy, Value) %>%
+  group_by(Reporting.Economy, Partner.Economy) %>%
+  summarise(Value = sum(Value)) %>%
+  mutate(Reporting.Economy = ifelse(Reporting.Economy == "C\xf4te d'Ivoire",
+                                    "Cote d'Ivoire",
+                                    ifelse(Reporting.Economy == "T\xfcrkiye",
+                                           "Turkiye",
+                                           Reporting.Economy)),
+         Partner.Economy = ifelse(Partner.Economy == "C\xf4te d'Ivoire",
+                                  "Cote d'Ivoire",
+                                  ifelse(Partner.Economy == "T\xfcrkiye",
+                                         "Turkiye",
+                                         ifelse(Partner.Economy == "Sao Tom\xe9 and Principe",
+                                                "Sao Tome and Principe",
+                                                Partner.Economy))))
+```
+```{r, echo=FALSE}
+filtered_data
+```
+
+Coordinates for each country were retrieved from the Google Maps API using ggmap.
+```{r, eval=FALSE}
+geolocated_data <- filtered_data %>%
+  mutate_geocode(Reporting.Economy) %>%
+  rename(Reporting.lon = lon, Reporting.lat = lat) %>%
+  mutate_geocode(Partner.Economy) %>%
+  rename(Partner.lon = lon, Partner.lat = lat)
+
+geolocated_data
+```
+
+```{r, echo=FALSE}
+geolocated_data <- readRDS("geolocated_data.rds")
+```
+
+Finally, data was subset into several tables for future use in leaflet.
+```{r message=FALSE, warning=FALSE, results='hide'}
+##subset coordinate data to reporting country
+Reporting_lonlat <- geolocated_data %>%
+  select(Reporting.Economy, Reporting.lon, Reporting.lat) %>%
+  unique() %>%
+  mutate(Grouping = "World")
+
+##add degree data for sizing
+degree_data <- geolocated_data %>%
+  ungroup() %>%
+  select(Reporting.Economy, Partner.Economy) %>%
+  group_by(Reporting.Economy) %>%
+  summarise(Degree = n())
+
+##Create world data frame for sizing
+world_data <- geolocated_data %>%
+  summarize(Value = sum(Value)) %>%
+  left_join(Reporting_lonlat) %>%
+  left_join(degree_data)
+
+##combine data
+combined_data <- geolocated_data %>%
+  left_join(degree_data, by = c("Partner.Economy" = "Reporting.Economy"))
+```
+
+Leaflet is a popular mapping JavaScript library which has been implemented in R and was used to visualize trade data on a world map. Functions for color scales were provided by leaflet and was used to segment data by five color quantiles based on export value. Trade connectivity (or degree), was visualized by an incrementally increasing circle marker radius centered on each country.
+```{r message=FALSE, warning=FALSE}
+##functions and preparation for leaflet
+quantile_pal <- colorQuantile("Reds", geolocated_data$Value, 5)
+quantile_pal_world <- colorQuantile("Blues", world_data$Value, 5)
+degree_size <- function(x) {
+  ifelse(x > 40, 60,
+         ifelse(40 > x & x > 30, 50,
+                ifelse(30 > x & x > 20, 40,
+                       ifelse(20 > x & x > 10, 30, 20))))
+}
+```
+A minimal background map was used from the provider tiles included in the leaflet package. Each country was then represented as circle markers with sizes that reflected their trade connectivity. The color of each circle marker is assigned based export value quantile (described previously). Each country was given their own overlay group showcasing reported export value by partner economy in red. Total export trade value for the selected country was shown in blue. A "world" group was added with only total export trade values for all reporting economies (this is the default for the map).
+```{r message=FALSE, warning=FALSE}
+##visualize with leaflet
+WTO_Export_Map <- leaflet(combined_data) %>%
+  addProviderTiles("Stamen.TonerLite",
+                   options = providerTileOptions(minZoom = 0,
+                                                 maxZoom = 4)) %>%
+  addCircleMarkers(lng = ~Partner.lon,
+                   lat = ~Partner.lat,
+                   group = ~Reporting.Economy,
+                   label = ~paste0(Partner.Economy,
+                                  ": ",
+                                  round(Value, 2),
+                                  " Million"),
+                   stroke = TRUE,
+                   color = ~quantile_pal(Value),
+                   radius = ~degree_size(Degree)) %>%
+  addCircleMarkers(data = world_data,
+                   lng = ~Reporting.lon,
+                   lat = ~Reporting.lat,
+                   group = ~Reporting.Economy,
+                   label = ~paste0(Reporting.Economy,
+                                   " Total Export Value: ",
+                                   round(Value, 2),
+                                   " Million"),
+                   color = ~quantile_pal_world(Value),
+                   radius = ~degree_size(Degree)) %>%
+  addCircleMarkers(data = world_data,
+                   lng = ~Reporting.lon,
+                   lat = ~Reporting.lat,
+                   group = ~Grouping,
+                   label = ~paste0(Reporting.Economy,
+                                   " Total Export Value: ",
+                                   round(Value, 2),
+                                   " Million"),
+                   color = ~quantile_pal_world(Value),
+                   radius = ~degree_size(Degree)) %>%
+  addLegend(data = world_data,
+            pal = quantile_pal_world, 
+            values = world_data$Value,
+            group = "World") %>%
+  addLayersControl(overlayGroups = ~c(Reporting.Economy, "World")) %>%
+  hideGroup(group = ~Reporting.Economy) %>%
+  setMaxBounds(-190, -100, 190, 100) %>%
+  setView(10, 10, 2)
+```
+
+```{r, echo=FALSE, out.width="100%"}
+WTO_Export_Map
+```
+
+## Analysis
+
+Visualization of geographical data in an interactive format makes it easier to do exploratory data analysis of the dataset. It is obvious upon first glance at the "World" overlay group that trade connectivity is generally positively correlated with export value. This is expected as a greater number of trade relations should be correlated with greater export demand which naturally leads to greater export values. One exception may be Australia which seems to handle relatively small export values for its trade connectivity. A closer look at Australia's trading partners suggest that this may be due to the lack of major export destinations such as the United States or European Union. In contrast, Vietnam, despite a lower number of export destinations, exported 25 times the value of Australia in 2021 (according to this dataset). This is plausibly, in part, due to its export relations with South Korea. It is important to remember while analyzing this dataset, that the pandemic was a time of great global change and trade relations are not yet likely to have been solidified. It would be interesting to redo this map for 2022 and see how trade relations may or may not have changed.
+
+## References
+
+D. Kahle and H. Wickham. ggmap: Spatial Visualization with ggplot2. The R Journal, 5(1), 144-161. URL http://journal.r-project.org/archive/2013-1/kahle-wickham.pdf
+
+J. Cheng, B. Karambelkar and Y. Xie (2022). leaflet: Create Interactive Web Maps with the JavaScript 'Leaflet' Library. R package version 2.1.1 URL https://CRAN.R-project.org/package=leaflet
+
+R Core Team (2021). R: A language and environment for statistical computing. R Foundation for Statistical Computing, Vienna, Austria. URL https://www.R-project.org/
+
+R. Vaidyanathan, Y. Xie, J. Allaire, J. Cheng, C. Sievert, K. Russell (2021). htmlwidgets: HTML Widgets for R. R
+package version 1.5.4, https://CRAN.R-project.org/package=htmlwidgets
+
+Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software, 4(43), 1686, https://doi.org/10.21105/joss.01686
+
+Special thanks to Tamim M. for discussion and review.
