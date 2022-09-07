@@ -172,4 +172,6 @@ package version 1.5.4, https://CRAN.R-project.org/package=htmlwidgets
 
 Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source Software, 4(43), 1686, https://doi.org/10.21105/joss.01686
 
+World Trade Organization (2021). WTO Stats. http://stats.wto.org
+
 Special thanks to Tamim M. for discussion and review.
